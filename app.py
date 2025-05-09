@@ -1,87 +1,58 @@
-from flask import Flask, request
-from db import db
-from models import StoreModel, ItemModel
+from flask import Flask, request, jsonify
+from flask_sqlalchemy import SQLAlchemy
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required
+from werkzeug.security import generate_password_hash, check_password_hash
 
-def create_app():
-    app = Flask(__name__)
-    app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///data.db"
-    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app = Flask(__name__)
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///data.db"
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["JWT_SECRET_KEY"] = "super-secret"  # заміни на щось безпечніше у продакшн
 
-    db.init_app(app)
+db = SQLAlchemy(app)
+jwt = JWTManager(app)
 
-    @app.route("/")
-    def home():
-        return "Hello from SQLAlchemy!"
+# ======= МОДЕЛІ ========
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password = db.Column(db.String(200), nullable=False)
 
-    @app.route("/store/<string:name>", methods=["POST"])
-    def create_store(name):
-        if StoreModel.query.filter_by(name=name).first():
-            return {"message": "Store already exists."}, 400
+class Item(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(80))
+    price = db.Column(db.Float)
+    store_id = db.Column(db.Integer, nullable=False)
 
-        new_store = StoreModel(name=name)
-        db.session.add(new_store)
-        db.session.commit()
-        return {"message": f"Store '{name}' created successfully."}, 201
+# ======= ЕНДПОІНТИ ========
 
-    @app.route("/stores", methods=["GET"])
-    def get_stores():
-        stores = StoreModel.query.all()
-        return {
-            "stores": [
-                {"id": store.id, "name": store.name}
-                for store in stores
-            ]
-        }
+@app.post('/register')
+def register():
+    data = request.get_json()
+    if User.query.filter_by(username=data["username"]).first():
+        return {"message": "User already exists"}, 400
+    hashed_pw = generate_password_hash(data["password"])
+    new_user = User(username=data["username"], password=hashed_pw)
+    db.session.add(new_user)
+    db.session.commit()
+    return {"message": "User created"}, 201
 
-    @app.route("/item", methods=["POST"])
-    def create_item():
-        data = request.get_json()
-        name = data.get("name")
-        price = data.get("price")
-        store_id = data.get("store_id")
+@app.post('/login')
+def login():
+    data = request.get_json()
+    user = User.query.filter_by(username=data["username"]).first()
+    if user and check_password_hash(user.password, data["password"]):
+        access_token = create_access_token(identity=user.id)
+        return {"access_token": access_token}
+    return {"message": "Invalid credentials"}, 401
 
-        if not all([name, price, store_id]):
-            return {"message": "Missing data (name, price, store_id required)."}, 400
+@app.get('/items')
+@jwt_required()
+def get_items():
+    items = Item.query.all()
+    return jsonify([{"id": i.id, "name": i.name, "price": i.price} for i in items])
 
-        item = ItemModel(name=name, price=price, store_id=store_id)
-        db.session.add(item)
-        db.session.commit()
-        return {"message": f"Item '{name}' created successfully."}, 201
-
-    @app.route("/items", methods=["GET"])
-    def get_items():
-        items = ItemModel.query.all()
-        return {
-            "items": [
-                {
-                    "id": item.id,
-                    "name": item.name,
-                    "price": item.price,
-                    "store_id": item.store_id
-                }
-                for item in items
-            ]
-        }
-
-    @app.route("/store/<int:store_id>/items", methods=["GET"])
-    def get_store_items(store_id):
-        store = StoreModel.query.get(store_id)
-        if not store:
-            return {"message": "Store not found."}, 404
-
-        return {
-            "store": store.name,
-            "items": [
-                {"id": item.id, "name": item.name, "price": item.price}
-                for item in store.items
-            ]
-        }
-
+# ======= СТАРТ СЕРВЕРА ========
+if __name__ == '__main__':
     with app.app_context():
         db.create_all()
-
-    return app
-
-if __name__ == "__main__":
-    app = create_app()
     app.run(debug=True)
